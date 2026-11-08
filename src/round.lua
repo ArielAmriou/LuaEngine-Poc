@@ -1,82 +1,43 @@
--- The game itself: targets appear, the player shoots them, then the score is shown.
---
---   menu --click--> playing --time is up--> results --R or click--> playing ...
+-- Menu, rounds and score. The modes (lib/gridshot.lua, lib/peek.lua) all have:
+-- create(gm), start(gm), clear(gm), shoot(gm, round) -> points, reaction | nil,
+-- update(gm, round, dt), results(round) -> text.
 
--- same as config.conf
-local SCREEN_W, SCREEN_H = 3000, 1876
+local Ui = dofile('lib/ui.lua')
+local Quit = dofile('lib/quit.lua')
+local MODES = {
+    gridshot = dofile('lib/gridshot.lua'),
+    peek = dofile('lib/peek.lua'),
+}
 
--- the interface is laid out for a screen 720 px high, then scaled to the real one;
--- panel.png is 720x420
-local UI = SCREEN_H / 720
-local PANEL_X = (SCREEN_W - 720 * UI) / 2
-local PANEL_Y = (SCREEN_H - 420 * UI) / 2
-
--- times in seconds
+-- seconds
 local ROUND_TIME = 30
-local TARGET_LIFE = 2
-local SPAWN_DELAY = 0.3
-local MAX_TARGETS = 3
+local HITMARKER_TIME = 0.15
 
--- 'menu', 'playing' or 'results', and the seconds spent in it
+-- image sizes in the 720 px layout
+local CROSSHAIR_SIZE = 32
+local HITMARKER_SIZE = 40
+local PANEL_W, PANEL_H = 720, 420
+local PANEL_X = (Ui.SCREEN_W - Ui.px(PANEL_W)) / 2
+local PANEL_Y = (Ui.SCREEN_H - Ui.px(PANEL_H)) / 2
+local TEXT_X = PANEL_X + Ui.px(50)
+
+-- 'menu', 'playing' or 'results'
 local state = 'menu'
-local stateTime = 0
+local mode = 'gridshot'
 
--- the stats of the current round, filled by startRound
 local round = {}
-local bestScore = 0
+local bestScore = {gridshot = 0, peek = 0}
 
--- {entity, alive, age, size} for each target
-local targets = {}
--- the entities of the interface: hud, title, body, panel, hitmarker
-local ui = {}
+local hud, title, body, panel, hitmarker
 local hitSound
 local hitmarkerTime = 0
 
------------------------------------------------------------------- helpers
-
--- Moves a 2D entity on screen. Called everywhere a sprite is placed or hidden.
-local function moveTo(gm, entity, x, y)
-    local pos = gm:getComponent(entity, 'Position2D')
-    pos.x = x
-    pos.y = y
-end
-
--- Hides a 2D entity by moving it far outside the window.
--- Called by startRound (panel) and update (hit marker).
-local function hide(gm, entity)
-    moveTo(gm, entity, -10000, -10000)
-end
-
--- Changes what a text entity shows. Called by the screens and updatePlaying (HUD).
-local function setText(gm, entity, str)
-    gm:getComponent(entity, 'Text2D').str = str
-end
-
--- Creates a hidden 2D sprite from an image. Called by start.
-local function newSprite(gm, path, scale)
-    local entity = gm:createEntity()
-    gm:addComponent(entity, 'Position2D', {x = -10000})
-    gm:addComponent(entity, 'Texture2D', {path = path})
-    gm:addComponent(entity, 'Sprite2D', {scale = scale})
-    return entity
-end
-
--- Creates an empty text at a place on screen, its size scaled to the screen.
--- Called by start.
-local function newText(gm, x, y, size)
-    local entity = gm:createEntity()
-    gm:addComponent(entity, 'Position2D', {x = x, y = y})
-    gm:addComponent(entity, 'Font', {path = 'assets/fonts/font.ttf'})
-    gm:addComponent(entity, 'Text2D', {str = '', fontSize = size * UI})
-    return entity
-end
-
--- Rounds a number to the nearest integer. Called by shoot, accuracy and endRound.
+-- Rounds to the nearest integer. Called by scoreHit, accuracy and endRound.
 local function toInt(x)
     return math.floor(x + 0.5)
 end
 
--- The percentage of shots that hit. Called by updatePlaying (HUD) and endRound.
+-- Percentage of shots that hit. Called by updatePlaying and endRound.
 local function accuracy()
     if round.shots == 0 then
         return 100
@@ -84,169 +45,88 @@ local function accuracy()
     return toInt(round.hits * 100 / round.shots)
 end
 
------------------------------------------------------------------- targets
-
--- Hides a target under the floor until it is used again.
--- Called by shoot (hit), updateTargets (too old) and endRound.
-local function removeTarget(gm, target)
-    target.alive = false
-    gm:getComponent(target.entity, 'Position3D').y = -100
+-- Counts a hit, plays its sound and shows the hit marker. Called by updatePlaying.
+local function scoreHit(gm, points, reaction)
+    round.hits = round.hits + 1
+    round.score = round.score + toInt(points)
+    round.reactionTotal = round.reactionTotal + math.max(0, reaction)
+    round.sinceLastHit = 0
+    gm:getComponent(hitSound, 'Sound').state = SoundState.PLAY
+    hitmarkerTime = HITMARKER_TIME
 end
 
--- Puts a target at a random place in front of the player, with a random size.
--- Called by updateTargets when a slot is free.
-local function spawnTarget(gm, target)
-    local pos = gm:getComponent(target.entity, 'Position3D')
-    pos.x = math.random() * 12 - 6
-    pos.y = math.random() * 5 + 1
-    pos.z = math.random() * 5 - 14
-
-    target.alive = true
-    target.age = 0
-    target.size = 0.5 + math.random() * 0.4
-end
-
--- The radius of a target now: it shrinks to a third of its size before vanishing.
--- Called by updateTargets (to draw it) and aimedTarget (to hit it).
-local function radiusOf(target)
-    local timeLeft = 1 - target.age / TARGET_LIFE
-    return target.size * (0.35 + 0.65 * timeLeft)
-end
-
--- The target under the crosshair, or nil: a line from the eyes along the
--- camera's direction, tested against each target's sphere. Called by shoot.
-local function aimedTarget(gm)
-    for _, eye, angle in gm:view({'Position3D', 'CameraAngle'}) do
-        -- the direction the camera looks at
-        local dirX = math.sin(angle.yaw) * math.cos(angle.pitch)
-        local dirY = math.sin(angle.pitch)
-        local dirZ = -math.cos(angle.yaw) * math.cos(angle.pitch)
-
-        for _, target in ipairs(targets) do
-            if target.alive then
-                local pos = gm:getComponent(target.entity, 'Position3D')
-                local x, y, z = pos.x - eye.x, pos.y - eye.y, pos.z - eye.z
-
-                -- how far the target is along the aim line, and away from it
-                local along = x * dirX + y * dirY + z * dirZ
-                local awaySquared = x * x + y * y + z * z - along * along
-
-                if along > 0 and awaySquared < radiusOf(target) ^ 2 then
-                    return target
-                end
-            end
-        end
-    end
-    return nil
-end
-
------------------------------------------------------------------- screens
-
--- Shows the start menu. Called once by start.
+-- Shows the menu. Called by start and updateResults.
 local function showMenu(gm)
-    moveTo(gm, ui.panel, PANEL_X, PANEL_Y)
-    setText(gm, ui.title, 'AIM TRAINER')
-    setText(gm, ui.body,
-        'Shoot the targets before they vanish.\n' ..
-        'The faster the hit, the more points.\n' ..
-        ROUND_TIME .. ' seconds per round.\n\n\n' ..
-        '[Left click] start        [Esc] quit')
+    state = 'menu'
+    Ui.center(gm, panel, PANEL_W, PANEL_H)
+    Ui.setText(gm, title, 'AIM TRAINER')
+    Ui.setText(gm, body,
+        '[1] Gridshot\n' ..
+        '     Shoot the targets before they shrink away.\n' ..
+        '[2] Peek\n' ..
+        '     Shoot the mannequins running between crates.\n' ..
+        '     A headshot scores more.\n' ..
+        '     [Z Q S D] move, [Space] jump.\n\n' ..
+        ROUND_TIME .. ' seconds per round.          [Esc] quit')
 end
 
--- Resets the stats and hides the menu: the round begins.
--- Called by updateMenu and updateResults.
-local function startRound(gm)
+-- Resets the stats and starts a round of a mode. Called by updateMenu and updateResults.
+local function startRound(gm, newMode)
+    MODES[mode].clear(gm)
+    mode = newMode
     state = 'playing'
-    stateTime = 0
-    round = {timeLeft = ROUND_TIME, score = 0, hits = 0, shots = 0, missed = 0,
-             reactionTotal = 0, sinceLastHit = 0, nextSpawn = 0}
+    round = {
+        timeLeft = ROUND_TIME,
+        score = 0,
+        shots = 0,
+        hits = 0,
+        headshots = 0,
+        missed = 0,
+        reactionTotal = 0,
+        sinceLastHit = 0,
+        -- seconds before the mode may spawn something
+        spawnIn = 0,
+    }
+    MODES[mode].start(gm)
 
-    hide(gm, ui.panel)
-    setText(gm, ui.title, '')
-    setText(gm, ui.body, '')
+    Ui.hide(gm, panel)
+    Ui.setText(gm, title, '')
+    Ui.setText(gm, body, '')
 end
 
--- Removes the targets and shows the results of the round.
--- Called by updatePlaying when the time is up.
+-- Clears the arena and shows the results. Called by updatePlaying.
 local function endRound(gm)
     state = 'results'
-    stateTime = 0
-    for _, target in ipairs(targets) do
-        removeTarget(gm, target)
-    end
-    bestScore = math.max(bestScore, round.score)
+    MODES[mode].clear(gm)
+    bestScore[mode] = math.max(bestScore[mode], round.score)
 
     local reaction = '-'
     if round.hits > 0 then
         reaction = toInt(round.reactionTotal * 1000 / round.hits) .. ' ms'
     end
 
-    moveTo(gm, ui.panel, PANEL_X, PANEL_Y)
-    setText(gm, ui.hud, '')
-    setText(gm, ui.title, 'SCORE ' .. round.score)
-    setText(gm, ui.body,
-        'Targets hit: ' .. round.hits .. '\n' ..
-        'Targets missed: ' .. round.missed .. '\n' ..
+    Ui.center(gm, panel, PANEL_W, PANEL_H)
+    Ui.setText(gm, hud, '')
+    Ui.setText(gm, title, 'SCORE ' .. round.score)
+    Ui.setText(gm, body,
+        MODES[mode].results(round) ..
         'Accuracy: ' .. accuracy() .. '%\n' ..
         'Average reaction: ' .. reaction .. '\n' ..
-        'Best score: ' .. bestScore .. '\n\n' ..
-        '[R] or [Left click] play again      [Q] quit')
+        'Best score: ' .. bestScore[mode] .. '\n\n' ..
+        '[R] play again     [M] menu     [Q] quit')
 end
 
------------------------------------------------------------------- each frame
-
--- In the menu: a click starts the round. Called by update.
+-- [1] or [2] starts a round. Called by update.
 local function updateMenu(gm)
-    if gm:mouse():isPressed(MouseButton.Left) then
-        startRound(gm)
+    local keyboard = gm:keyboard()
+    if keyboard:isPressed(Key.Num1) or keyboard:isPressed(Key.Numpad1) then
+        startRound(gm, 'gridshot')
+    elseif keyboard:isPressed(Key.Num2) or keyboard:isPressed(Key.Numpad2) then
+        startRound(gm, 'peek')
     end
 end
 
--- Counts a shot, and if it hits a target: score, reaction time, sound and
--- hit marker. Called by updatePlaying on a left click.
-local function shoot(gm)
-    round.shots = round.shots + 1
-
-    local target = aimedTarget(gm)
-    if target then
-        local timeLeft = 1 - target.age / TARGET_LIFE
-        round.hits = round.hits + 1
-        round.score = round.score + toInt(50 + 100 * timeLeft)
-        -- the reaction counts from when the player could start on this target:
-        -- when it appeared, or the previous hit if the target was already there
-        local reaction = math.min(target.age, round.sinceLastHit)
-        round.reactionTotal = round.reactionTotal + reaction
-        round.sinceLastHit = 0
-        removeTarget(gm, target)
-
-        gm:getComponent(hitSound, 'Sound').state = SoundState.PLAY
-        hitmarkerTime = 0.15
-    end
-end
-
--- Ages and shrinks the targets, removes the ones too old, and spawns new ones
--- in the free slots. Called by updatePlaying.
-local function updateTargets(gm, dt)
-    round.nextSpawn = round.nextSpawn - dt
-    round.sinceLastHit = round.sinceLastHit + dt
-
-    for _, target in ipairs(targets) do
-        if target.alive then
-            target.age = target.age + dt
-            if target.age >= TARGET_LIFE then
-                round.missed = round.missed + 1
-                removeTarget(gm, target)
-            else
-                gm:getComponent(target.entity, 'Sprite3D').scale = radiusOf(target)
-            end
-        elseif round.nextSpawn <= 0 then
-            spawnTarget(gm, target)
-            round.nextSpawn = SPAWN_DELAY
-        end
-    end
-end
-
--- During a round: the timer, the shots, the targets and the HUD. Called by update.
+-- Runs the timer, the shots, the mode and the HUD. Called by update.
 local function updatePlaying(gm, dt)
     round.timeLeft = round.timeLeft - dt
     if round.timeLeft <= 0 then
@@ -255,37 +135,48 @@ local function updatePlaying(gm, dt)
     end
 
     if gm:mouse():isPressed(MouseButton.Left) then
-        shoot(gm)
+        round.shots = round.shots + 1
+        local points, reaction = MODES[mode].shoot(gm, round)
+        if points then
+            scoreHit(gm, points, reaction)
+        end
     end
-    updateTargets(gm, dt)
 
-    setText(gm, ui.hud,
+    round.spawnIn = round.spawnIn - dt
+    round.sinceLastHit = round.sinceLastHit + dt
+    MODES[mode].update(gm, round, dt)
+
+    Ui.setText(gm, hud,
         'SCORE ' .. round.score ..
         '      TIME ' .. math.ceil(round.timeLeft) ..
         '      ACCURACY ' .. accuracy() .. '%')
 end
 
--- On the results: R or a click plays again, Q quits (the sounds are destroyed
--- first, as in render.lua, so the engine does not crash). Called by update.
+-- [R] replays, [M] goes to the menu, [Q] quits. Called by update.
 local function updateResults(gm)
-    -- wait a little, so that a last shot does not restart the round at once
-    local click = stateTime > 0.8 and gm:mouse():isPressed(MouseButton.Left)
-
-    if click or gm:keyboard():isPressed(Key.R) then
-        startRound(gm)
-    elseif gm:keyboard():isPressed(Key.Q) then
-        for sound in gm:view({'Sound'}) do
-            gm:destroyEntity(sound)
-        end
-        gm:stop()
+    local keyboard = gm:keyboard()
+    if keyboard:isPressed(Key.R) then
+        startRound(gm, mode)
+    elseif keyboard:isPressed(Key.M) then
+        showMenu(gm)
+    elseif keyboard:isPressed(Key.Q) then
+        Quit.now(gm)
     end
 end
 
--- The game's system: runs the current state, and shows the hit marker for a
--- short time after a hit. Called by the engine every frame.
+-- Shows the hit marker for a moment after a hit. Called by update.
+local function updateHitmarker(gm, dt)
+    hitmarkerTime = hitmarkerTime - dt
+    if hitmarkerTime > 0 then
+        Ui.center(gm, hitmarker, HITMARKER_SIZE, HITMARKER_SIZE)
+    else
+        Ui.hide(gm, hitmarker)
+    end
+end
+
+-- Runs the current screen. Called by the engine every frame.
 local function update(gm)
     local dt = gm:elapsed() / 1000
-    stateTime = stateTime + dt
 
     if state == 'menu' then
         updateMenu(gm)
@@ -294,42 +185,30 @@ local function update(gm)
     else
         updateResults(gm)
     end
-
-    hitmarkerTime = hitmarkerTime - dt
-    if hitmarkerTime > 0 then
-        moveTo(gm, ui.hitmarker, SCREEN_W / 2 - 20 * UI, SCREEN_H / 2 - 20 * UI)
-    else
-        hide(gm, ui.hitmarker)
-    end
+    updateHitmarker(gm, dt)
 end
 
------------------------------------------------------------------- start
-
--- Creates the targets, the sounds and the interface, shows the menu, and
--- registers update. Called once by the engine at launch.
+-- Creates the modes, the interface and the systems. Called by the engine at launch.
 function start(gm)
-    -- the targets are created once, then moved around and hidden
-    for i = 1, MAX_TARGETS do
-        local entity = gm:createEntity()
-        gm:addComponent(entity, 'Position3D', {y = -100})
-        gm:addComponent(entity, 'Model3D', {path = 'assets/models/target.glb'})
-        gm:addComponent(entity, 'Sprite3D')
-        targets[i] = {entity = entity, alive = false, age = 0, size = 1}
+    for _, m in pairs(MODES) do
+        m.create(gm)
     end
 
     hitSound = gm:createEntity()
     gm:addComponent(hitSound, 'Sound', {path = 'assets/sounds/hit.wav'})
 
-    -- 2D sprites are drawn in creation order: the panel goes over the crosshair
-    local crosshair = newSprite(gm, 'assets/sprites/crosshair.png', UI)
-    moveTo(gm, crosshair, SCREEN_W / 2 - 16 * UI, SCREEN_H / 2 - 16 * UI)
-    ui.hitmarker = newSprite(gm, 'assets/sprites/hitmarker.png', UI)
-    ui.panel = newSprite(gm, 'assets/sprites/panel.png', UI)
+    -- sprites are drawn in creation order: the panel covers the crosshair
+    local crosshair = Ui.newSprite(gm, 'assets/sprites/crosshair.png')
+    Ui.center(gm, crosshair, CROSSHAIR_SIZE, CROSSHAIR_SIZE)
+    hitmarker = Ui.newSprite(gm, 'assets/sprites/hitmarker.png')
+    panel = Ui.newSprite(gm, 'assets/sprites/panel.png')
 
-    ui.hud = newText(gm, 24 * UI, 18 * UI, 28)
-    ui.title = newText(gm, PANEL_X + 50 * UI, PANEL_Y + 35 * UI, 56)
-    ui.body = newText(gm, PANEL_X + 50 * UI, PANEL_Y + 125 * UI, 26)
+    hud = Ui.newText(gm, Ui.px(24), Ui.px(18), 28)
+    title = Ui.newText(gm, TEXT_X, PANEL_Y + Ui.px(35), 56)
+    body = Ui.newText(gm, TEXT_X, PANEL_Y + Ui.px(125), 26)
 
     showMenu(gm)
     gm:createSystem(update)
+    gm:addSystem('MasterAnimateSpriteSheet3D')
+    gm:addSystem('Sound2D')
 end

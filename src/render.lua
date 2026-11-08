@@ -1,24 +1,19 @@
--- Loaded last, so its systems run after the game's: point the camera,
--- draw the 3D world, then the 2D on top of it. Full screen, Escape quits.
+-- Full screen, camera and drawing: 3D first, then 2D on top. Escape quits.
 
--- Stops the game when Escape or the window's close button is pressed.
--- The sounds are destroyed first: the engine can free the audio before them
--- when it closes, and crash. Called by the engine every frame.
-local function quit(gm)
+local Quit = dofile('lib/quit.lua')
+
+-- Quits on Escape or the close button. Called by the engine every frame.
+local function quitOnClose(gm)
     if gm:shouldClose() then
-        for sound in gm:view({'Sound'}) do
-            gm:destroyEntity(sound)
-        end
-        gm:stop()
+        Quit.now(gm)
     end
 end
 
--- Goes full screen and registers quit, the camera and the drawing systems,
--- in the order they run. Called once by the engine at launch.
+-- Registers the drawing systems, in the order they run. Called by the engine at launch.
 function start(gm)
     gm:setFullScreen(true)
 
-    gm:createSystem(quit)
+    gm:createSystem(quitOnClose)
     gm:addSystem('UpdateCamera')
     gm:addSystem('CameraAngle')
     gm:addSystem('Draw3D')

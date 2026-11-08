@@ -1,6 +1,6 @@
--- The training room: a big box around the player.
+-- The training room.
 
--- Creates the room's 3D model. Called once by the engine at launch.
+-- Creates the room's model. Called by the engine at launch.
 function start(gm)
     local room = gm:createEntity()
     gm:addComponent(room, 'Position3D')

@@ -1,22 +1,22 @@
--- The player's eyes: a camera that turns with the mouse.
+-- The player's eyes: a camera turned by the mouse.
 
-local EYE_HEIGHT = 1.7
+local Movement = dofile('lib/movement.lua')
+
 local SENSITIVITY = 0.0025
+-- vertical, in degrees
+local FIELD_OF_VIEW = 70
 
--- Creates the camera and the engine systems that turn it with the mouse.
--- Called once by the engine at launch.
+-- Creates the camera and the mouse systems. Called by the engine at launch.
 function start(gm)
     local camera = gm:createEntity()
-    gm:addComponent(camera, 'Position3D', {y = EYE_HEIGHT})
-    gm:addComponent(camera, 'Camera3D', {fovy = 70})
+    gm:addComponent(camera, 'Position3D')
+    gm:addComponent(camera, 'Camera3D', {fovy = FIELD_OF_VIEW})
     gm:addComponent(camera, 'CameraAngle')
     gm:addComponent(camera, 'CameraAngleInput')
     gm:addComponent(camera, 'CameraMouseControl', {sensitivity = SENSITIVITY})
+    Movement.reset(gm)
 
-    -- keep the mouse inside the window, as in any first-person game
     gm:setHideCursor(true)
-
-    -- mouse movement -> camera angle
     gm:addSystem('CameraMouseControl')
     gm:addSystem('CameraAngleInput')
 end

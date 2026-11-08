@@ -3,9 +3,16 @@
 A first-person aim trainer for the R-Type Lua engine
 ([Lua scripting guide](https://github.com/pierrick-simon/R-Type/wiki/Lua-Scripting-Guide)).
 
-Targets appear in front of you and shrink until they vanish. Shoot them with the
-left click: the faster the hit, the more points. A round lasts 30 seconds, then
-the score is shown, and you can play again or quit.
+Two modes, picked in the menu:
+
+- **Gridshot** (`1`): targets appear in front of you and shrink until they
+  vanish. The faster the hit, the more points.
+- **Peek** (`2`): mannequins run from one crate to the next. Shoot them while
+  they cross the gap; a headshot scores more. Walk with `Z Q S D` and jump
+  with `Space`.
+
+A round lasts 30 seconds, then the score is shown: `R` plays again, `M` goes
+back to the menu, `Q` or `Escape` quits.
 
 ## Run
 
@@ -15,29 +22,38 @@ cd LuaPoc && game
 
 ## Files
 
-The engine loads the scripts in alphabetical order, and their systems run in that
-order every frame: the number in front of each file sets it. Each script has its
-own variables, so every file is self-contained.
+The engine runs every script of `src/` (each one has a `start` function), in
+alphabetical order. Each script has its own variables, so the code they share
+is in modules, in `lib/`, loaded with `dofile`. `lib/` must stay out of `src/`:
+the engine would run its files as scripts.
 
 | File | Role |
 |---|---|
-| `src/1_room.lua` | the 3D room |
-| `src/2_player.lua` | the camera, turned by the mouse |
-| `src/3_round.lua` | the game: targets, shooting, score, menus |
-| `src/4_weapon.lua` | the gun in the right hand: recoil, flash, sound |
-| `src/5_render.lua` | runs last: camera, 3D drawing, 2D on top, Escape quits |
-| `tools/gen_assets.py` | generates the room, the targets, the 2D sprites and the sounds in `assets/` |
-| `tools/render_viewmodel.py` | renders `assets/sprites/gun.png` with Blender (see below) |
+| `src/player.lua` | the camera, turned by the mouse |
+| `src/render.lua` | the camera update, 3D drawing, 2D on top, full screen, Escape quits |
+| `src/room.lua` | the 3D room |
+| `src/round.lua` | the menu, the rounds, the score and the results |
+| `src/weapon.lua` | the gun in the right hand: recoil, flash, sound |
+| `lib/gridshot.lua` | the Gridshot mode: the targets |
+| `lib/peek.lua` | the Peek mode: the crates and the mannequins |
+| `lib/movement.lua` | walking with Z Q S D and jumping with Space (used by Peek) |
+| `lib/spatial.lua` | sounds that come from a place in the room (target pops, footsteps) |
+| `lib/aim.lua` | the aim ray, and what it hits (spheres, boxes) |
+| `lib/models.lua` | creating, placing and hiding 3D models |
+| `lib/quit.lua` | quitting without the engine's crash on exit (destroys the sounds first) |
+| `lib/ui.lua` | the screen size, and creating and placing 2D sprites and texts |
 
-The settings (round time, target life, number of targets, sensitivity) are at the
-top of `3_round.lua` and `2_player.lua`.
+Each mode has the same functions (`create`, `start`, `clear`, `shoot`,
+`update`, `results`), called by `src/round.lua`. The settings of each mode
+are at the top of its file; the round time is at the top of `src/round.lua`,
+the mouse sensitivity at the top of `src/player.lua`.
 
 ## Screen size
 
 The game runs full screen at the screen's own resolution. A script cannot read
-the screen's size, so it is written in three places: `windowWidth` and
-`windowHeight` in `config.conf`, and `SCREEN_W, SCREEN_H` at the top of
-`3_round.lua` and `4_weapon.lua`. Everything in 2D is scaled from it.
+the screen's size, so it is written in `config.conf` (`windowWidth`,
+`windowHeight`) and in `lib/ui.lua` (`SCREEN_W`, `SCREEN_H`). Everything in 2D
+is scaled from it.
 
 ## The gun sprite
 
@@ -64,7 +80,7 @@ blender -b --python tools/render_viewmodel.py -- --preview --gun-back 0.05 --loo
 ```
 
 Then render for real: it writes `assets/sprites/gun.png` and updates the numbers
-at the top of `src/4_weapon.lua` by itself.
+at the top of `src/weapon.lua` by itself.
 
 ```sh
 blender -b --python tools/render_viewmodel.py -- --gun-back 0.05 --look-left 0.1
@@ -74,6 +90,6 @@ The mannequin and the pistol it uses are in `tools/sources/`.
 
 ## Credits
 
-- Mannequin and pose: Universal Animation Library by Quaternius (CC0).
+- Mannequins and animations: Universal Animation Library by Quaternius (CC0).
 - Pistol: Makarov from the "Guns&Explosives" pack.
 - Font: DejaVu Sans Bold.
