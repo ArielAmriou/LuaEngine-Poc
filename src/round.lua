@@ -265,7 +265,8 @@ local function updatePlaying(gm, dt)
         '      ACCURACY ' .. accuracy() .. '%')
 end
 
--- On the results: R or a click plays again, Q quits. Called by update.
+-- On the results: R or a click plays again, Q quits (the sounds are destroyed
+-- first, as in render.lua, so the engine does not crash). Called by update.
 local function updateResults(gm)
     -- wait a little, so that a last shot does not restart the round at once
     local click = stateTime > 0.8 and gm:mouse():isPressed(MouseButton.Left)
@@ -273,6 +274,9 @@ local function updateResults(gm)
     if click or gm:keyboard():isPressed(Key.R) then
         startRound(gm)
     elseif gm:keyboard():isPressed(Key.Q) then
+        for sound in gm:view({'Sound'}) do
+            gm:destroyEntity(sound)
+        end
         gm:stop()
     end
 end

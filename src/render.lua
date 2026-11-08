@@ -2,9 +2,13 @@
 -- draw the 3D world, then the 2D on top of it. Full screen, Escape quits.
 
 -- Stops the game when Escape or the window's close button is pressed.
--- Called by the engine every frame.
+-- The sounds are destroyed first: the engine can free the audio before them
+-- when it closes, and crash. Called by the engine every frame.
 local function quit(gm)
     if gm:shouldClose() then
+        for sound in gm:view({'Sound'}) do
+            gm:destroyEntity(sound)
+        end
         gm:stop()
     end
 end
